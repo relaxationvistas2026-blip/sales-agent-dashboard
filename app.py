@@ -271,10 +271,6 @@ html_code = f"""
             width: 100%;
         }}
 
-        .search-box input::placeholder {{
-            color: #475569;
-        }}
-
         .search-shortcut {{
             font-size: 11px;
             background-color: #1e293b;
@@ -1395,7 +1391,7 @@ html_code = f"""
                     <h1 class="header-title">Orders</h1>
                     <div class="header-actions">
                         <button class="btn btn-light" onclick="alert('Importing CSV templates...')">↓ Import</button>
-                        <button class="btn btn-dark" onclick="alert('Exporting orders Excel spreadsheet...')">↑ Export</button>
+                        <button class="btn btn-dark" onclick="exportTableToCSV('ordersTable', 'orders_report.csv')">↑ Export</button>
                     </div>
                 </div>
 
@@ -1440,7 +1436,7 @@ html_code = f"""
                     <h1 class="header-title">Inventory & Stock</h1>
                     <div class="header-actions">
                         <button class="btn btn-light" onclick="alert('Ordering new stock from suppliers...')">📦 Reorder</button>
-                        <button class="btn btn-dark" onclick="alert('Adding new product listing...')">+ Product</button>
+                        <button class="btn btn-dark" onclick="exportTableToCSV('inventoryTable', 'inventory_report.csv')">↑ Export</button>
                     </div>
                 </div>
 
@@ -1472,7 +1468,7 @@ html_code = f"""
                     <h1 class="header-title">Payments Log</h1>
                     <div class="header-actions">
                         <button class="btn btn-light" onclick="alert('Generating invoice statements...')">🧾 Invoices</button>
-                        <button class="btn btn-dark" onclick="alert('Processing merchant refund transactions...')">🔄 Refund</button>
+                        <button class="btn btn-dark" onclick="exportTableToCSV('paymentsTable', 'payments_report.csv')">↑ Export</button>
                     </div>
                 </div>
 
@@ -1502,7 +1498,7 @@ html_code = f"""
                     <h1 class="header-title">Customers Directory</h1>
                     <div class="header-actions">
                         <button class="btn btn-light" onclick="alert('Exporting customers email listings...')">✉️ Email list</button>
-                        <button class="btn btn-dark" onclick="alert('Creating new customer profile...')">+ Customer</button>
+                        <button class="btn btn-dark" onclick="exportTableToCSV('customersTable', 'customers_report.csv')">↑ Export</button>
                     </div>
                 </div>
 
@@ -1643,7 +1639,7 @@ html_code = f"""
             <div class="action-overlay-close" onclick="deselectAll()">✕</div>
             <div class="selected-count-badge" id="selectedCountText">Selected: 0</div>
             <div class="overlay-btns">
-                <button class="btn-overlay" onclick="alert('Exporting selected orders...')">↑ Export</button>
+                <button class="btn-overlay" onclick="exportSelectedOrders()">↑ Export</button>
                 <button class="btn-overlay" onclick="alert('Printing selected orders...')">🖨️ Print</button>
                 <button class="btn-overlay" onclick="alert('Duplicating selected orders...')">📋 Duplicate</button>
                 <span class="action-dots" style="color: #ffffff; padding: 0 8px;">•••</span>
@@ -1700,7 +1696,7 @@ html_code = f"""
                 </div>
                 <div class="modal-footer">
                     <div class="modal-footer-btns">
-                        <button class="btn-modal-action" onclick="alert('Exporting this order...')">↑ Export</button>
+                        <button class="btn-modal-action" id="btnModalExport">↑ Export</button>
                         <button class="btn-modal-action" onclick="alert('Duplicating this order...')">📋 Duplicate</button>
                         <button class="btn-modal-action" onclick="alert('Printing this order...')">🖨️ Print</button>
                     </div>
@@ -1982,6 +1978,9 @@ html_code = f"""
             document.getElementById("modalCustomerAddress").innerText = order.address;
             document.getElementById("modalTotalVal").innerText = `$${{order.total.toFixed(2)}}`;
 
+            // Set up dynamic functional export button for this single order
+            document.getElementById("btnModalExport").setAttribute("onclick", `exportSingleOrder("${{order.order_id}}")`);
+
             const list = document.getElementById("modalItemsList");
             list.innerHTML = "";
             
@@ -2041,6 +2040,110 @@ html_code = f"""
                     row.style.display = "none";
                 }}
             }});
+        }}
+
+        // Real functional Excel/CSV Export Engines
+        function exportTableToCSV(tableId, filename) {{
+            const table = document.getElementById(tableId);
+            if (!table) return;
+
+            let csv = [];
+            const rows = table.querySelectorAll("tr");
+            
+            for (let i = 0; i < rows.length; i++) {{
+                // Skip rows that are hidden by search or filters
+                if (rows[i].style.display === "none") continue;
+
+                let row = [];
+                const cols = rows[i].querySelectorAll("td, th");
+                
+                for (let j = 0; j < cols.length; j++) {{
+                    // Skip first checkbox cell and last dot menu cell
+                    if (cols[j].classList.contains("checkbox-cell") || j === cols.length - 1) continue;
+                    
+                    let text = cols[j].innerText.trim();
+                    text = text.replace(/(\r\n|\n|\r)/gm, " ");
+                    text = text.replace(/"/g, '""'); // Escape double quotes
+                    row.push('"' + text + '"');
+                }}
+                if (row.length > 0) {{
+                    csv.push(row.join(","));
+                }}
+            }}
+
+            // Trigger real browser CSV download
+            const csvContent = "data:text/csv;charset=utf-8,\\uFEFF" + csv.join("\\n");
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", filename);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }}
+
+        function exportSelectedOrders() {{
+            if (selectedOrders.size === 0) return;
+            
+            let csv = [["Order ID", "Customer", "Type", "Status", "Product", "Total", "Date"]];
+            
+            ordersData.forEach(order => {{
+                if (selectedOrders.has(order.order_id)) {{
+                    csv.push([
+                        order.order_id,
+                        order.customer,
+                        order.type,
+                        order.status,
+                        order.main_product,
+                        "$" + order.total.toFixed(2),
+                        order.date
+                    ].map(val => '"' + val.replace(/"/g, '""') + '"'));
+                }}
+            }});
+
+            const csvContent = "data:text/csv;charset=utf-8,\\uFEFF" + csv.map(e => e.join(",")).join("\\n");
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", "selected_orders_report.csv");
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }}
+
+        function exportSingleOrder(orderId) {{
+            const order = ordersData.find(o => o.order_id === orderId);
+            if (!order) return;
+            
+            let csv = [];
+            csv.push([`"Order Details for ${{order.order_id}}"`]);
+            csv.push([`"Customer Name"`, `"${{order.customer}}"`]);
+            csv.push([`"Email"`, `"${{order.email}}"`]);
+            csv.push([`"Phone"`, `"${{order.phone}}"`]);
+            csv.push([`"Shipping Address"`, `"${{order.address}}"`]);
+            csv.push([]);
+            csv.push([`"Product Name"`, `"Units"`, `"Price"`, `"Total"`]);
+            
+            order.products.forEach(p => {{
+                csv.push([
+                    `"${{p.name}}"`,
+                    p.units,
+                    `$${{p.price.toFixed(2)}}`,
+                    `$${{p.total.toFixed(2)}}`
+                ]);
+            }});
+            
+            csv.push([]);
+            csv.push([`"Grand Total"`, `""`, `""`, `"$${{order.total.toFixed(2)}}"`]);
+            
+            const csvContent = "data:text/csv;charset=utf-8,\\uFEFF" + csv.map(e => e.join(",")).join("\\n");
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `order_${{order.order_id}}_report.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         }}
 
         // Setup onload default tab
