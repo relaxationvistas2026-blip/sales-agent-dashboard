@@ -17,7 +17,7 @@ excel_file = "Antigravity Sales Agent.xlsx"
 @st.cache_data
 def load_and_process_data(file_path):
     if not os.path.exists(file_path):
-        return None, None, None
+        return None, None, None, None
     
     # Read sheets
     df_customers = pd.read_excel(file_path, sheet_name="Customers")
@@ -61,7 +61,6 @@ def load_and_process_data(file_path):
         total_revenue = float(group["Revenue (USD)"].sum())
         
         # Determine status deterministically
-        # Julia: Paid, Leo: Paid, Mary: Paid, AvrilLwin: Refunded, Jeneffer: Cancelled, others: Paid
         status = "Paid"
         if customer_name_clean == "Jeneffer":
             status = "Cancelled"
@@ -116,16 +115,40 @@ def load_and_process_data(file_path):
             "revenue": float(row["Revenue (USD)"])
         })
         
-    return orders, top_sellers, df_inventory.to_dict(orient="records")
+    # Clean up inventory records and convert status to simple clean strings
+    inv_records = []
+    for _, r in df_inventory.iterrows():
+        status_clean = str(r["Status"]).replace("🟢 ", "").replace("⚠️ ", "").strip() if pd.notna(r["Status"]) else "Healthy"
+        inv_records.append({
+            "product_id": str(r["Product ID"]),
+            "product_name": str(r["Product Name"]),
+            "category": str(r["Category"]),
+            "price": str(r["Price (USD/THB)"]),
+            "current_stock": int(r["Current Stock"]) if pd.notna(r["Current Stock"]) else 50,
+            "units_sold": int(r["Units Sold"]) if pd.notna(r["Units Sold"]) else 0,
+            "original_stock": int(r["Original Stock"]) if pd.notna(r["Original Stock"]) else 50,
+            "status": status_clean
+        })
+        
+    # Prepare customers details list with total metrics
+    cust_list = []
+    for name, info in cust_info.items():
+        customer_orders = [o for o in orders if o["customer"] == name]
+        total_spent = sum(o["total"] for o in customer_orders)
+        cust_list.append({
+            "name": name,
+            "email": info["email"],
+            "phone": info["phone"],
+            "address": info["address"],
+            "orders_count": len(customer_orders),
+            "total_spent": total_spent
+        })
+        
+    return orders, top_sellers, inv_records, cust_list
 
-orders, top_sellers, inventory = load_and_process_data(excel_file)
+orders, top_sellers, inventory, customers = load_and_process_data(excel_file)
 
-# If data loading fails, show a beautiful fallback
-if not orders:
-    st.error("Could not load data from 'Antigravity Sales Agent.xlsx'. Please ensure the file is present in the workspace directory.")
-    st.stop()
-
-# Aggregate dynamic stats for the sidebar
+# Aggregate dynamic stats for calculations
 total_revenue = sum(o["total"] for o in orders)
 total_orders_count = len(orders)
 paid_count = sum(1 for o in orders if o["status"] == "Paid")
@@ -140,10 +163,12 @@ refunded_pct = 100 - paid_pct - cancelled_pct
 avg_order_value = total_revenue / total_orders_count if total_orders_count > 0 else 0
 avg_items_per_order = sum(sum(p["units"] for p in o["products"]) for o in orders) / total_orders_count if total_orders_count > 0 else 0
 
-# Prepare JSON data for client-side JavaScript interactions
+# Convert metrics to JSON for client side
 orders_json = json.dumps(orders)
+inventory_json = json.dumps(inventory)
+customers_json = json.dumps(customers)
 
-# High-fidelity custom CSS & HTML matching the dashboard reference image
+# HTML & CSS template with full structural layouts for all 5 tabs and a client-side Javascript router
 html_code = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -264,6 +289,10 @@ html_code = f"""
             flex-direction: column;
             gap: 4px;
             margin-bottom: auto;
+        }}
+
+        .menu-item {{
+            cursor: pointer;
         }}
 
         .menu-item a {{
@@ -434,7 +463,7 @@ html_code = f"""
             border-color: #0f172a;
         }}
 
-        /* Orders Data Table */
+        /* Custom Tables Layout */
         .table-container {{
             background-color: #ffffff;
             border: 1px solid #e2e8f0;
@@ -445,14 +474,14 @@ html_code = f"""
             margin-bottom: 16px;
         }}
 
-        .orders-table {{
+        .custom-data-table {{
             width: 100%;
             border-collapse: collapse;
             text-align: left;
             font-size: 14px;
         }}
 
-        .orders-table th {{
+        .custom-data-table th {{
             background-color: #f8fafc;
             padding: 14px 16px;
             font-weight: 600;
@@ -460,16 +489,15 @@ html_code = f"""
             border-bottom: 1px solid #e2e8f0;
         }}
 
-        .orders-table td {{
+        .custom-data-table td {{
             padding: 16px;
             border-bottom: 1px solid #f1f5f9;
             color: #334155;
             vertical-align: middle;
         }}
 
-        .orders-table tr:hover {{
+        .custom-data-table tr:hover {{
             background-color: #f8fafc;
-            cursor: pointer;
         }}
 
         /* Checkbox Styling */
@@ -529,7 +557,7 @@ html_code = f"""
             color: #0f172a;
         }}
 
-        /* Badge Styling */
+        /* Badge Statuses */
         .badge-status {{
             padding: 4px 10px;
             border-radius: 6px;
@@ -540,22 +568,22 @@ html_code = f"""
             gap: 6px;
         }}
 
-        .badge-status.paid {{
+        .badge-status.paid, .badge-status.healthy {{
             color: #10b981;
             background-color: #ecfdf5;
         }}
 
-        .badge-status.paid::before {{
+        .badge-status.paid::before, .badge-status.healthy::before {{
             content: "🟢";
             font-size: 8px;
         }}
 
-        .badge-status.cancelled {{
+        .badge-status.cancelled, .badge-status.low {{
             color: #ef4444;
             background-color: #fef2f2;
         }}
 
-        .badge-status.cancelled::before {{
+        .badge-status.cancelled::before, .badge-status.low::before {{
             content: "🔴";
             font-size: 8px;
         }}
@@ -584,7 +612,7 @@ html_code = f"""
             color: #334155;
         }}
 
-        /* Right Analytics Sidebar */
+        /* Analytics Sidebar */
         .analytics-sidebar {{
             background-color: #ffffff;
             padding: 32px 24px;
@@ -593,6 +621,7 @@ html_code = f"""
             display: flex;
             flex-direction: column;
             gap: 32px;
+            border-left: 1px solid #e2e8f0;
         }}
 
         .analytics-title {{
@@ -846,6 +875,114 @@ html_code = f"""
             color: #0f172a;
         }}
 
+        /* Dashboard Overview Content */
+        .dashboard-grid {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 24px;
+            margin-bottom: 32px;
+        }}
+
+        .dashboard-card {{
+            background-color: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }}
+
+        .dashboard-card-title {{
+            font-size: 13px;
+            font-weight: 600;
+            color: #64748b;
+            text-transform: uppercase;
+        }}
+
+        .dashboard-card-val {{
+            font-size: 28px;
+            font-weight: 700;
+            color: #0f172a;
+        }}
+
+        .dashboard-card-change {{
+            font-size: 12px;
+            font-weight: 600;
+            color: #10b981;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }}
+
+        .dashboard-row-layout {{
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }}
+
+        .dashboard-section {{
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }}
+
+        .dashboard-section-title {{
+            font-size: 18px;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 16px;
+        }}
+
+        /* Custom Mini Charts for Dashboard */
+        .visual-bar-chart {{
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 16px;
+        }}
+
+        .visual-bar-row {{
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }}
+
+        .visual-bar-lbl {{
+            font-size: 13px;
+            color: #475569;
+            width: 140px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+
+        .visual-bar-track {{
+            flex-grow: 1;
+            height: 12px;
+            background-color: #f1f5f9;
+            border-radius: 6px;
+            overflow: hidden;
+        }}
+
+        .visual-bar-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, #6366f1, #3b82f6);
+            border-radius: 6px;
+        }}
+
+        .visual-bar-val {{
+            font-size: 13px;
+            font-weight: 600;
+            color: #0f172a;
+            width: 50px;
+            text-align: right;
+        }}
+
         /* Floating Bottom Action Overlay */
         .action-overlay {{
             position: fixed;
@@ -911,7 +1048,7 @@ html_code = f"""
             background-color: #1e293b;
         }}
 
-        /* Details Popover Card Modal (Order #4567 popup in image) */
+        /* Details Popover Card Modal */
         .modal-overlay {{
             position: fixed;
             top: 0;
@@ -1156,19 +1293,19 @@ html_code = f"""
 
                 <div class="search-box">
                     <span>🔍</span>
-                    <input type="text" id="searchInput" placeholder="Search orders..." onkeyup="filterTable()">
+                    <input type="text" id="searchInput" placeholder="Search data..." onkeyup="filterTableSearch()">
                     <span class="search-shortcut">⌘ F</span>
                 </div>
 
                 <ul class="menu-list">
-                    <li class="menu-item"><a href="#">📊 Dashboard</a></li>
-                    <li class="menu-item active"><a href="#">📋 Orders</a></li>
-                    <li class="menu-item"><a href="#">📦 Inventory</a></li>
-                    <li class="menu-item"><a href="#">💳 Payments</a></li>
-                    <li class="menu-item"><a href="#">👥 Customers</a></li>
-                    <li class="menu-item"><a href="#">🔔 Notifications <span class="badge">7</span></a></li>
-                    <li class="menu-item"><a href="#">❓ Help & support</a></li>
-                    <li class="menu-item"><a href="#">⚙️ Settings</a></li>
+                    <li class="menu-item" id="menu-dashboard" onclick="switchTab('dashboard', this)"><a>📊 Dashboard</a></li>
+                    <li class="menu-item active" id="menu-orders" onclick="switchTab('orders', this)"><a>📋 Orders</a></li>
+                    <li class="menu-item" id="menu-inventory" onclick="switchTab('inventory', this)"><a>📦 Inventory</a></li>
+                    <li class="menu-item" id="menu-payments" onclick="switchTab('payments', this)"><a>💳 Payments</a></li>
+                    <li class="menu-item" id="menu-customers" onclick="switchTab('customers', this)"><a>👥 Customers</a></li>
+                    <li class="menu-item" onclick="alert('Notification Center opened')"><a>🔔 Notifications <span class="badge">7</span></a></li>
+                    <li class="menu-item" onclick="alert('Help and Support portal is under maintenance')"><a>❓ Help & support</a></li>
+                    <li class="menu-item" onclick="alert('Settings configured successfully')"><a>⚙️ Settings</a></li>
                 </ul>
             </div>
 
@@ -1184,13 +1321,81 @@ html_code = f"""
 
         <!-- Main Workspace -->
         <div class="workspace">
-            <!-- Table content area -->
-            <main class="main-content">
+            <!-- 1. Dashboard Tab View -->
+            <main class="main-content" id="dashboard-view" style="display: none;">
+                <div class="header-section">
+                    <h1 class="header-title">Dashboard Overview</h1>
+                    <div class="header-actions">
+                        <button class="btn btn-light" onclick="alert('Refreshing dashboard metrics...')">🔄 Refresh</button>
+                        <button class="btn btn-dark" onclick="alert('Generating Sales Report PDF...')">📄 Report</button>
+                    </div>
+                </div>
+
+                <div class="dashboard-grid">
+                    <div class="dashboard-card">
+                        <span class="dashboard-card-title">Total Revenue</span>
+                        <span class="dashboard-card-val">${total_revenue:,.2f}</span>
+                        <span class="dashboard-card-change">▲ +12.4% this month</span>
+                    </div>
+                    <div class="dashboard-card">
+                        <span class="dashboard-card-title">Total Orders</span>
+                        <span class="dashboard-card-val">{total_orders_count}</span>
+                        <span class="dashboard-card-change">▲ +8.2% this week</span>
+                    </div>
+                    <div class="dashboard-card">
+                        <span class="dashboard-card-title">Avg. Order Value</span>
+                        <span class="dashboard-card-val">${avg_order_value:.2f}</span>
+                        <span class="dashboard-card-change" style="color: #64748b;">▬ Stable</span>
+                    </div>
+                    <div class="dashboard-card">
+                        <span class="dashboard-card-title">Product Categories</span>
+                        <span class="dashboard-card-val">5</span>
+                        <span class="dashboard-card-change">▲ Active stock</span>
+                    </div>
+                </div>
+
+                <div class="dashboard-row-layout">
+                    <div class="dashboard-section">
+                        <h3 class="dashboard-section-title">Sales Revenue Performance</h3>
+                        <div class="visual-bar-chart">
+                            {"".join(f'''
+                            <div class="visual-bar-row">
+                                <span class="visual-bar-lbl">{s["name"]}</span>
+                                <div class="visual-bar-track">
+                                    <div class="visual-bar-fill" style="width: {min(100, s["units"] * 8)}%;"></div>
+                                </div>
+                                <span class="visual-bar-val">${s["revenue"]:,.0f}</span>
+                            </div>
+                            ''' for s in top_sellers)}
+                        </div>
+                    </div>
+                    <div class="dashboard-section">
+                        <h3 class="dashboard-section-title">Orders Breakdown</h3>
+                        <div class="status-legend" style="margin-top: 24px;">
+                            <div class="legend-row">
+                                <span class="legend-name"><span class="bullet bullet-green"></span> Paid Orders</span>
+                                <span class="legend-val">{paid_count} ({paid_pct}%)</span>
+                            </div>
+                            <div class="legend-row" style="margin-top: 12px;">
+                                <span class="legend-name"><span class="bullet" style="background-color: #ef4444;"></span> Cancelled Orders</span>
+                                <span class="legend-val">{cancelled_count} ({cancelled_pct}%)</span>
+                            </div>
+                            <div class="legend-row" style="margin-top: 12px;">
+                                <span class="legend-name"><span class="bullet" style="background-color: #64748b;"></span> Refunded Orders</span>
+                                <span class="legend-val">{refunded_count} ({refunded_pct}%)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- 2. Orders Tab View -->
+            <main class="main-content" id="orders-view">
                 <div class="header-section">
                     <h1 class="header-title">Orders</h1>
                     <div class="header-actions">
-                        <button class="btn btn-light">↓ Import</button>
-                        <button class="btn btn-dark">↑ Export</button>
+                        <button class="btn btn-light" onclick="alert('Importing CSV templates...')">↓ Import</button>
+                        <button class="btn btn-dark" onclick="alert('Exporting orders Excel spreadsheet...')">↑ Export</button>
                     </div>
                 </div>
 
@@ -1206,7 +1411,7 @@ html_code = f"""
 
                 <!-- Table Container -->
                 <div class="table-container">
-                    <table class="orders-table" id="ordersTable">
+                    <table class="custom-data-table" id="ordersTable">
                         <thead>
                             <tr>
                                 <th class="checkbox-cell">
@@ -1223,13 +1428,105 @@ html_code = f"""
                             </tr>
                         </thead>
                         <tbody>
-                            <!-- Generated rows -->
+                            <!-- JavaScript rendered rows -->
                         </tbody>
                     </table>
                 </div>
             </main>
 
-            <!-- Right Analytics Sidebar -->
+            <!-- 3. Inventory Tab View -->
+            <main class="main-content" id="inventory-view" style="display: none;">
+                <div class="header-section">
+                    <h1 class="header-title">Inventory & Stock</h1>
+                    <div class="header-actions">
+                        <button class="btn btn-light" onclick="alert('Ordering new stock from suppliers...')">📦 Reorder</button>
+                        <button class="btn btn-dark" onclick="alert('Adding new product listing...')">+ Product</button>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <table class="custom-data-table" id="inventoryTable">
+                        <thead>
+                            <tr>
+                                <th>Product ID</th>
+                                <th>Product Name</th>
+                                <th>Category</th>
+                                <th>Price</th>
+                                <th>Current Stock</th>
+                                <th>Original Stock</th>
+                                <th>Units Sold</th>
+                                <th>Status</th>
+                                <th style="width: 48px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- JavaScript rendered inventory rows -->
+                        </tbody>
+                    </table>
+                </div>
+            </main>
+
+            <!-- 4. Payments Tab View -->
+            <main class="main-content" id="payments-view" style="display: none;">
+                <div class="header-section">
+                    <h1 class="header-title">Payments Log</h1>
+                    <div class="header-actions">
+                        <button class="btn btn-light" onclick="alert('Generating invoice statements...')">🧾 Invoices</button>
+                        <button class="btn btn-dark" onclick="alert('Processing merchant refund transactions...')">🔄 Refund</button>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <table class="custom-data-table" id="paymentsTable">
+                        <thead>
+                            <tr>
+                                <th>Payment ID</th>
+                                <th>Customer</th>
+                                <th>Method</th>
+                                <th>Amount</th>
+                                <th>Status</th>
+                                <th>Date</th>
+                                <th style="width: 48px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- JavaScript rendered payment rows -->
+                        </tbody>
+                    </table>
+                </div>
+            </main>
+
+            <!-- 5. Customers Tab View -->
+            <main class="main-content" id="customers-view" style="display: none;">
+                <div class="header-section">
+                    <h1 class="header-title">Customers Directory</h1>
+                    <div class="header-actions">
+                        <button class="btn btn-light" onclick="alert('Exporting customers email listings...')">✉️ Email list</button>
+                        <button class="btn btn-dark" onclick="alert('Creating new customer profile...')">+ Customer</button>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <table class="custom-data-table" id="customersTable">
+                        <thead>
+                            <tr>
+                                <th>Customer</th>
+                                <th>Email</th>
+                                <th>Phone</th>
+                                <th>Shipping Address</th>
+                                <th>Total Orders</th>
+                                <th>Total Spent</th>
+                                <th style="width: 48px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- JavaScript rendered customer rows -->
+                        </tbody>
+                    </table>
+                </div>
+            </main>
+
+            <!-- Right Sidebar: Shared Widgets -->
             <aside class="analytics-sidebar">
                 <!-- Receipt of goods -->
                 <div class="receipt-card">
@@ -1388,8 +1685,8 @@ html_code = f"""
 
                     <div class="modal-tabs">
                         <div class="modal-tab active">Order items</div>
-                        <div class="modal-tab">Delivery</div>
-                        <div class="modal-tab">Docs</div>
+                        <div class="modal-tab" onclick="alert('Delivery logistics tracking...')">Delivery</div>
+                        <div class="modal-tab" onclick="alert('Invoice docs and receipts...')">Docs</div>
                     </div>
 
                     <div class="modal-item-list" id="modalItemsList">
@@ -1415,12 +1712,49 @@ html_code = f"""
 
     <script>
         const ordersData = {orders_json};
+        const inventoryData = {inventory_json};
+        const customersData = {customers_json};
+        
         let selectedOrders = new Set();
         let currentFilterType = 'status';
         let currentFilterVal = 'all';
+        let activeTab = 'orders';
 
-        // Render the orders table dynamically
-        function renderTable() {{
+        // Tab Switch Router
+        function switchTab(tabName, el) {{
+            activeTab = tabName;
+            
+            // Toggle active menu selection
+            document.querySelectorAll(".menu-item").forEach(item => item.classList.remove("active"));
+            if (el) {{
+                el.classList.add("active");
+            }} else {{
+                document.getElementById("menu-" + tabName).classList.add("active");
+            }}
+
+            // Show and hide correct panel content
+            const tabs = ['dashboard', 'orders', 'inventory', 'payments', 'customers'];
+            tabs.forEach(t => {{
+                document.getElementById(t + "-view").style.display = (t === tabName) ? "flex" : "none";
+            }});
+
+            // Dynamically search update header
+            const searchInput = document.getElementById("searchInput");
+            searchInput.placeholder = "Search " + tabName + "...";
+            searchInput.value = "";
+
+            renderActiveTabContent();
+        }}
+
+        function renderActiveTabContent() {{
+            if (activeTab === 'orders') renderOrdersTable();
+            else if (activeTab === 'inventory') renderInventoryTable();
+            else if (activeTab === 'payments') renderPaymentsTable();
+            else if (activeTab === 'customers') renderCustomersTable();
+        }}
+
+        // Render standard Orders Table
+        function renderOrdersTable() {{
             const tbody = document.querySelector("#ordersTable tbody");
             tbody.innerHTML = "";
 
@@ -1458,7 +1792,7 @@ html_code = f"""
                     <td style="font-weight: 600; color: #0f172a;">$${{order.total.toFixed(2)}}</td>
                     <td style="color: #64748b;">${{order.date}}</td>
                     <td onclick="event.stopPropagation()">
-                        <span class="action-dots">•••</span>
+                        <span class="action-dots" onclick="alert('Order options panel coming soon...')">•••</span>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -1468,7 +1802,96 @@ html_code = f"""
             updateActionOverlay();
         }}
 
-        // Checkbox functions
+        // Render Inventory Table from Inventory JSON
+        function renderInventoryTable() {{
+            const tbody = document.querySelector("#inventoryTable tbody");
+            tbody.innerHTML = "";
+
+            inventoryData.forEach(item => {{
+                const tr = document.createElement("tr");
+                const badgeClass = item.status === 'Healthy' ? 'healthy' : 'low';
+                const badgeLabel = item.status === 'Healthy' ? 'Healthy' : 'Low Stock';
+                
+                tr.innerHTML = `
+                    <td style="font-weight: 600; color: #0f172a;">${{item.product_id}}</td>
+                    <td style="font-weight: 500;">${{item.product_name}}</td>
+                    <td>${{item.category}}</td>
+                    <td>${{item.price}}</td>
+                    <td style="font-weight: 600; color: #0f172a;">${{item.current_stock}}</td>
+                    <td style="color: #64748b;">${{item.original_stock}}</td>
+                    <td style="font-weight: 600; color: #0f172a;">${{item.units_sold}}</td>
+                    <td>
+                        <span class="badge-status ${{badgeClass}}">${{badgeLabel}}</span>
+                    </td>
+                    <td>
+                        <span class="action-dots" onclick="alert('Stock reorder panel opened...')">•••</span>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            }});
+        }}
+
+        // Render Payments Table dynamically
+        function renderPaymentsTable() {{
+            const tbody = document.querySelector("#paymentsTable tbody");
+            tbody.innerHTML = "";
+
+            ordersData.forEach(o => {{
+                const tr = document.createElement("tr");
+                const payId = o.order_id.replace("#", "PAY-");
+                const method = o.type === 'Shipping' ? 'Credit Card' : 'Bank Transfer';
+                
+                tr.innerHTML = `
+                    <td style="font-weight: 600; color: #0f172a;">${{payId}}</td>
+                    <td>
+                        <div class="customer-cell">
+                            <div class="cust-avatar">${{o.customer.substring(0,2).toUpperCase()}}</div>
+                            <span class="cust-name">${{o.customer}}</span>
+                        </div>
+                    </td>
+                    <td>${{method}}</td>
+                    <td style="font-weight: 600; color: #0f172a;">$${{o.total.toFixed(2)}}</td>
+                    <td>
+                        <span class="badge-status ${{o.status.toLowerCase()}}">${{o.status}}</span>
+                    </td>
+                    <td style="color: #64748b;">${{o.date}}</td>
+                    <td>
+                        <span class="action-dots" onclick="alert('Payment invoice details ready for export')">•••</span>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            }});
+        }}
+
+        // Render Customers Directory
+        function renderCustomersTable() {{
+            const tbody = document.querySelector("#customersTable tbody");
+            tbody.innerHTML = "";
+
+            customersData.forEach(c => {{
+                const tr = document.createElement("tr");
+                
+                tr.innerHTML = `
+                    <td>
+                        <div class="customer-cell">
+                            <div class="cust-avatar">${{c.name.substring(0,2).toUpperCase()}}</div>
+                            <span class="cust-name">${{c.name}}</span>
+                        </div>
+                    </td>
+                    <td>${{c.email}}</td>
+                    <td>${{c.phone}}</td>
+                    <td style="font-size: 12px; line-height: 1.4; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${{c.address}}</td>
+                    <td style="font-weight: 600; color: #0f172a; text-align: center;">${{c.orders_count}}</td>
+                    <td style="font-weight: 600; color: #0f172a;">$${{c.total_spent.toFixed(2)}}</td>
+                    <td>
+                        <span class="action-dots" onclick="alert('Contacting customer...')">•••</span>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            }});
+        }}
+
+        // Checkbox management
         function toggleSelectRow(orderId, el) {{
             if (selectedOrders.has(orderId)) {{
                 selectedOrders.delete(orderId);
@@ -1502,7 +1925,7 @@ html_code = f"""
                 el.classList.add("checked");
             }}
             
-            renderTable();
+            renderOrdersTable();
         }}
 
         function updateHeaderCheckbox() {{
@@ -1532,14 +1955,14 @@ html_code = f"""
 
         function deselectAll() {{
             selectedOrders.clear();
-            renderTable();
+            renderOrdersTable();
         }}
 
         function updateActionOverlay() {{
             const overlay = document.getElementById("actionOverlay");
             const badge = document.getElementById("selectedCountText");
             
-            if (selectedOrders.size > 0) {{
+            if (selectedOrders.size > 0 && activeTab === 'orders') {{
                 badge.innerText = `Selected: ${{selectedOrders.size}}`;
                 overlay.classList.add("active");
             }} else {{
@@ -1547,7 +1970,7 @@ html_code = f"""
             }}
         }}
 
-        // Modal popover functions
+        // Popover Details Modal
         function showOrderDetails(orderId, event) {{
             const order = ordersData.find(o => o.order_id === orderId);
             if (!order) return;
@@ -1585,21 +2008,29 @@ html_code = f"""
             document.getElementById("detailModal").classList.remove("active");
         }}
 
-        // Filter functions
+        // Order list filtering
         function setFilter(type, value, pillEl) {{
             currentFilterType = type;
             currentFilterVal = value;
 
-            // Update active pill
             document.querySelectorAll(".filter-pill").forEach(p => p.classList.remove("active"));
             pillEl.classList.add("active");
 
-            renderTable();
+            renderOrdersTable();
         }}
 
-        function filterTable() {{
+        // Search filtering across all active list views
+        function filterTableSearch() {{
             const query = document.getElementById("searchInput").value.toLowerCase();
-            const tbody = document.querySelector("#ordersTable tbody");
+            let tbodyId = "";
+            if (activeTab === 'orders') tbodyId = "#ordersTable tbody";
+            else if (activeTab === 'inventory') tbodyId = "#inventoryTable tbody";
+            else if (activeTab === 'payments') tbodyId = "#paymentsTable tbody";
+            else if (activeTab === 'customers') tbodyId = "#customersTable tbody";
+            
+            if (!tbodyId) return;
+
+            const tbody = document.querySelector(tbodyId);
             const rows = tbody.querySelectorAll("tr");
 
             rows.forEach(row => {{
@@ -1612,9 +2043,9 @@ html_code = f"""
             }});
         }}
 
-        // Initial setup
+        // Setup onload default tab
         window.onload = () => {{
-            renderTable();
+            switchTab('orders');
         }};
     </script>
 </body>
